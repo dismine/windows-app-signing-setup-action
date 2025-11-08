@@ -1,0 +1,71 @@
+name: Test Windows Signing Setup Action
+
+on:
+  workflow_dispatch: # Allows you to run this workflow manually from the Actions tab
+
+# Set the URL as an environment variable for the cache key
+env:
+  SIMPLYSIGN_URL: 'https://files.certum.eu/software/SimplySignDesktop/Windows/9.3.2.67/SimplySignDesktop-9.3.2.67-64-bit-en.msi'
+
+jobs:
+  test-sign:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Action Code
+        uses: actions/checkout@v4
+
+      - name: Cache SimplySign Installer
+        uses: actions/cache@v4
+        with:
+          # This is the path where the installer will be saved by the action
+          path: SimplySignDesktop.msi
+          # The key ensures we get a new download if the URL changes
+          key: simplysign-msi-${{ env.SIMPLYSIGN_URL }}
+
+      - name: Create Dummy File to Sign
+        shell: pwsh
+        run: |
+          # Create a simple PowerShell script as our test file
+          Set-Content -Path "test-app.ps1" -Value "Write-Host 'This is a test signed file!'"
+          Write-Host "Created test-app.ps1"
+
+      - name: Run Windows App Signing Action
+        uses: ./
+        with:
+          certum-username: ${{ secrets.CERTUM_USERNAME }}
+          certum-otp-uri: ${{ secrets.CERTUM_OTP_URI }}
+          certum-key-id: ${{ secrets.CERTUM_KEY_ID }}
+          simplysign-url: ${{ env.SIMPLYSIGN_URL }}
+
+      - name: Manual Signing Step (Example)
+        shell: pwsh
+        run: |
+          Write-Host "✅ Signing setup complete."
+          Write-Host "Proceeding with manual signing step..."
+          
+          $keyId = "${{ secrets.CERTUM_KEY_ID }}"
+          $fileToSign = "test-app.ps1"
+          $tsaUrl = "http://time.certum.pl/"
+          
+          signtool.exe sign /sha1 $keyId /tr $tsaUrl /td sha256 /fd sha256 $fileToSign
+          
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "❌ Manual code signing failed. Signtool exit code: $LASTEXITCODE"
+              exit 1
+          } else {
+              Write-Host "✅ Manual file signing completed successfully."
+          }
+
+      - name: Verify Signature
+        shell: pwsh
+        run: |
+          Write-Host "Verifying signature on test-app.ps1..."
+          $sig = Get-AuthenticodeSignature -FilePath "test-app.ps1"
+          if ($sig.Status -eq 'Valid') {
+            Write-Host "✅ SUCCESS: test-app.ps1 is signed and valid."
+            Write-Host "Signed by: $($sig.SignerCertificate.Subject)"
+          } else {
+            Write-Error "❌ FAILED: Signature is not valid. Status: $($sig.Status)"
+            exit 1
+          }

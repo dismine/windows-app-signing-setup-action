@@ -1,0 +1,195 @@
+name: 'Windows App Signing Setup Action'
+description: 'A GitHub Action to prepare the environment for signing Windows applications with Certum''s SimplySign app.'
+branding:
+  icon: 'award'
+  color: 'green'
+
+inputs:
+  certum-username:
+    description: 'The username for your signing account.'
+    required: true
+  certum-otp-uri:
+    description: 'The TOTP URI (otpauth://) for the cloud signing account.'
+    required: true
+  certum-key-id:
+    description: 'The ID (SHA1 Thumbprint) of the signing certificate to use.'
+    required: true
+  simplysign-url:
+    description: 'Optional: A direct download URL for the primary desktop installer.'
+    required: false
+    default: 'https://files.certum.eu/software/SimplySignDesktop/Windows/9.3.2.67/SimplySignDesktop-9.3.2.67-64-bit-en.msi'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Download Certum Tools
+      shell: pwsh
+      run: |
+        $msiFile = "SimplySignDesktop.msi"
+        
+        # Check if the file already exists (e.g., from an external cache hit in the main workflow)
+        if (Test-Path $msiFile) {
+          Write-Host "✅ SimplySign Desktop MSI already exists (likely from cache). Skipping download."
+        } else {
+          Write-Host "Downloading SimplySign Desktop MSI..."
+          # Download SimplySign as MSI
+          Invoke-WebRequest -Uri "${{ inputs.simplysign-url }}" -OutFile $msiFile -ErrorAction Stop
+          Write-Host "✅ Downloaded SimplySign Desktop MSI."
+        }
+        
+    - name: Install Certum SimplySign (MSI Silent & Verified)
+      shell: pwsh
+      run: |
+        Write-Host "Starting SimplySign Desktop MSI installation..."
+        $logFile = "install_simplysign.log"
+        $installPath = "$env:ProgramFiles\Certum\SimplySign Desktop"
+        $timeoutSeconds = 300 # 5 minute maximum wait
+        
+        # MSI Installation command using /quiet and specific parameters
+        $arguments = @(
+          '/i'
+          'SimplySignDesktop.msi'
+          '/quiet'
+          '/norestart'
+          '/l*v'
+          $logFile
+          'ALLUSERS=1'
+          'REBOOT=ReallySuppress'
+        )
+        
+        # Start installation without waiting, so we can monitor the process
+        $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList $arguments -PassThru -NoNewWindow
+        $startTime = Get-Date
+
+        Write-Host "Monitoring installation process (PID: $($process.Id)). Timeout set to $timeoutSeconds seconds."
+        
+        $completed = $false
+        while (-not $process.HasExited -and (((Get-Date) - $startTime).TotalSeconds -lt $timeoutSeconds)) {
+            Start-Sleep -Seconds 10
+            $elapsed = ((Get-Date) - $startTime).TotalSeconds
+            
+            # Check log file growth for monitoring feedback
+            if (Test-Path $logFile) {
+                $logSize = (Get-Item $logFile).Length
+                Write-Host "Installation running after $($elapsed) seconds. Log file size: $($logSize) bytes."
+            } else {
+                 Write-Host "Installation running after $($elapsed) seconds. Log file not yet created."
+            }
+            
+            # Refresh the process object to check its latest status
+            $process.Refresh()
+        }
+        
+        # Check if the process exited due to timeout
+        if (-not $process.HasExited) {
+            Write-Error "❌ Installation timed out after $timeoutSeconds seconds. Forcing process termination."
+            $process | Stop-Process -Force -ErrorAction SilentlyContinue
+            exit 1
+        }
+        
+        # Installation process has exited, check the exit code
+        if ($process.ExitCode -ne 0) {
+          Write-Error "❌ SimplySign Desktop MSI installation failed with exit code $($process.ExitCode). Checking log..."
+          Get-Content $logFile -Tail 20 | Out-Host # Show tail of log for debugging
+          exit 1
+        }
+        
+        Write-Host "MSI installation process exited successfully after $(((Get-Date) - $startTime).TotalSeconds) seconds."
+        
+        # 1. Check for log success pattern (most reliable check)
+        $logContent = Get-Content $logFile -ErrorAction SilentlyContinue
+        # This regex matches the patterns used in the original script
+        $successPattern = "Installation operation completed successfully|MainEngineThread is returning 0|Windows Installer installed the product"
+
+        if ($logContent -notmatch $successPattern) {
+            Write-Error "❌ Installation log does not confirm success patterns. MSI exit code 0 is inconclusive."
+            exit 1
+        }
+        
+        # 2. Verify Installation Directory (robust check)
+        if (-Not (Test-Path $installPath -PathType Container)) {
+          Write-Error "❌ Installation directory not found at $installPath. Installation failed."
+          exit 1
+        }
+        
+        Write-Host "✅ SimplySign Desktop installed successfully and verified by log."
+        
+        Write-Host "Setting SS_PATH environment variable."
+        # Set environment variable for subsequent steps
+        echo "SS_PATH=$installPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+    - name: Configure SimplySign Registry for Automation
+      shell: pwsh
+      run: |
+        & ".\configure-simplysign-registry.ps1"
+    - name: Authenticate with Certum SimplySign (TOTP Injection)
+      shell: pwsh
+      env:
+        # Pass inputs as environment variables for the script
+        CERTUM_OTP_URI: ${{ inputs.certum-otp-uri }}
+        CERTUM_USERNAME: ${{ inputs.certum-username }}
+        CERTUM_EXE_PATH: "${{ env.SS_PATH }}\SimplySignDesktop.exe" # Pass path explicitly
+      run: |
+        Write-Host "Starting TOTP authentication and credential injection..."
+        # Execute the enhanced authentication script
+        & ".\Connect-SimplySign-Enhanced.ps1"
+    - name: Run Certificate Verification Check
+      shell: pwsh
+      env:
+        CERTUM_KEY_ID: ${{ inputs.certum-key-id }}
+      run: |
+        $keyId = "$env:CERTUM_KEY_ID"
+        $isVerified = $false
+        
+        Write-Host "=== CERTIFICATE VERIFICATION AND DEBUG LOGGING ==="
+        Write-Host "Allowing connection to stabilize..."
+        Start-Sleep -Seconds 10
+        
+        Write-Host "Comprehensive certificate availability check..."
+        Write-Host ""
+        
+        # --- Start of Comprehensive Logging ---
+        
+        Write-Host "=== Windows Certificate Store Analysis ==="
+        Write-Host "Current User Personal Store (Cert:\CurrentUser\My):"
+        Get-ChildItem -Path 'Cert:\CurrentUser\My' -ErrorAction SilentlyContinue |
+          Select-Object Subject, Issuer, Thumbprint, HasPrivateKey, NotAfter |
+          Format-Table -AutoSize
+        
+        Write-Host 'Local Machine Personal Store (Cert:\LocalMachine\My):'
+        Get-ChildItem -Path 'Cert:\LocalMachine\My' -ErrorAction SilentlyContinue |
+          Select-Object Subject, Issuer, Thumbprint, HasPrivateKey, NotAfter |
+          Format-Table -AutoSize
+        
+        Write-Host 'Searching for Certum-related certificates:'
+        Get-ChildItem -Path 'Cert:\CurrentUser\*','Cert:\LocalMachine\*' -Recurse -ErrorAction SilentlyContinue |
+          Where-Object { $_.Subject -like '*Certum*' -or $_.Issuer -like '*Certum*' -or $_.Subject -like '*Code Signing*' } |
+          Select-Object Subject, Issuer, Thumbprint, HasPrivateKey, NotAfter |
+          Format-Table -AutoSize
+        
+        Write-Host 'Certificates with Code Signing capability:'
+        Get-ChildItem -Path 'Cert:\CurrentUser\My','Cert:\LocalMachine\My' -ErrorAction SilentlyContinue |
+          Where-Object { $_.EnhancedKeyUsageList -like '*Code Signing*' } |
+          Select-Object Subject, Issuer, Thumbprint, HasPrivateKey, NotAfter |
+          Format-Table -AutoSize
+          
+        Write-Host ""
+        Write-Host "=== PKCS#11 Library Check ==="
+        $pkcsDll = "C:\Windows\System32\SimplySignPKCS.dll"
+        if (Test-Path $pkcsDll) {
+            Write-Host "PKCS#11 library present: $pkcsDll"
+            Get-Item $pkcsDll | Select-Object Name, VersionInfo, Length, CreationTime | Format-List
+        } else {
+            Write-Host "PKCS#11 library not found at $pkcsDll"
+        }
+        
+        Write-Host ""
+        Write-Host "=== SimplySign Desktop Status ==="
+        Write-Host 'SimplySign Desktop process status:'
+        Get-Process -Name '*SimplySign*' -ErrorAction SilentlyContinue |
+          Select-Object Name, Id, MainWindowTitle, Responding |
+          Format-Table -AutoSize
+          
+        Write-Host ""
+        Write-Host "--- End of Comprehensive Logging ---"
+        Write-Host ""
+        
