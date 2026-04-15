@@ -173,7 +173,27 @@ function Test-Configuration {
         }
     }
     
-    return $verificationResults, $allCorrect
+    # Always print a summary table
+    Write-Host ""
+    Write-Host "=== Verification Summary ==="
+    foreach ($setting in $verificationResults.Keys) {
+        $r = $verificationResults[$setting]
+        $status = if ($r.Correct) { "✅ OK" } else { "❌ MISMATCH" }
+        Write-Host ("  {0,-40} Expected={1,-5} Actual={2,-5} {3}" -f $setting, $r.Expected, $r.Actual, $status)
+    }
+    Write-Host ""
+
+    # Print failed settings separately for quick scanning
+    $failed = $verificationResults.GetEnumerator() | Where-Object { -not $_.Value.Correct }
+    if ($failed) {
+        Write-Host "=== Failed Settings ==="
+        foreach ($entry in $failed) {
+            Write-Error "  $($entry.Key): expected $($entry.Value.Expected), got $($entry.Value.Actual)"
+        }
+        Write-Host ""
+    }
+    
+    return $allCorrect
 }
 
 # Main execution
@@ -187,7 +207,7 @@ try {
     
     if ($VerifyOnly) {
         Write-Host "Verification-only mode - no changes will be made"
-        $verificationResults, $allCorrect = Test-Configuration
+        $allCorrect = Test-Configuration
         
         if ($allCorrect) {
             Write-Host "SUCCESS: All settings are correctly configured"
@@ -215,7 +235,7 @@ try {
     Show-CurrentSettings
     
     # Verify the configuration was applied correctly
-    $verificationResults, $allCorrect = Test-Configuration
+    $allCorrect = Test-Configuration
     
     if ($allCorrect) {
         Write-Host "SUCCESS: Registry configuration completed successfully"
