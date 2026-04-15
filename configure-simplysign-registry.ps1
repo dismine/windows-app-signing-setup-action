@@ -255,8 +255,8 @@ try {
         
         exit 0
     } else {
-        Write-Host "ERROR: Configuration verification failed"
-        Write-Host "Some settings were not applied correctly"
+        Write-Error "ERROR: Configuration verification failed"
+        Write-Error "Some settings were not applied correctly"
         
         "REGISTRY_CONFIGURATION_PARTIAL" | Out-File -FilePath "registry_config_status.log" -Encoding UTF8
         
@@ -264,7 +264,7 @@ try {
     }
     
 } catch {
-    Write-Host "FATAL ERROR: Registry configuration failed - $($_.Exception.Message)"
+    Write-Error "FATAL ERROR: Registry configuration failed - $($_.Exception.Message)"
     
     "REGISTRY_CONFIGURATION_FAILED" | Out-File -FilePath "registry_config_status.log" -Encoding UTF8
     
