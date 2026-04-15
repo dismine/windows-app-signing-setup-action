@@ -84,6 +84,6 @@ Set these repository secrets under **Settings → Secrets and variables → Acti
 
 ## 🧾 License
 
-MIT License © 2025 — Maintained by dismine
+MIT License © 2026 — Maintained by dismine
 
 This action is **not affiliated** with Certum.
