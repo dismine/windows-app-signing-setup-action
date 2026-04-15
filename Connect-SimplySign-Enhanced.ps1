@@ -44,6 +44,7 @@ $uri = [Uri]$OtpUri
 
 # Parse query parameters (compatible with both PowerShell 5.1 and 7+)
 try {
+    Add-Type -AssemblyName System.Web -ErrorAction Stop
     $q = [System.Web.HttpUtility]::ParseQueryString($uri.Query)
 } catch {
     $q = @{}
