@@ -249,24 +249,17 @@ try {
         Write-Host "1. Launch SimplySign Desktop"
         Write-Host "2. Login dialog should appear automatically"
         Write-Host "3. Complete authentication process"
-        
-        # Create a status file for the workflow to check
-        "REGISTRY_CONFIGURATION_SUCCESS" | Out-File -FilePath "registry_config_status.log" -Encoding UTF8
-        
+
         exit 0
     } else {
         Write-Error "ERROR: Configuration verification failed"
         Write-Error "Some settings were not applied correctly"
-        
-        "REGISTRY_CONFIGURATION_PARTIAL" | Out-File -FilePath "registry_config_status.log" -Encoding UTF8
         
         exit 1
     }
     
 } catch {
     Write-Error "FATAL ERROR: Registry configuration failed - $($_.Exception.Message)"
-    
-    "REGISTRY_CONFIGURATION_FAILED" | Out-File -FilePath "registry_config_status.log" -Encoding UTF8
     
     exit 1
 }
