@@ -17,7 +17,7 @@ inputs:
   simplysign-url:
     description: 'Optional: A direct download URL for the primary desktop installer.'
     required: false
-    default: 'https://files.certum.eu/software/SimplySignDesktop/Windows/9.3.2.67/SimplySignDesktop-9.3.2.67-64-bit-en.msi'
+    default: 'https://files.certum.eu/software/SimplySignDesktop/Windows/9.4.2.86/SimplySignDesktop-9.4.2.86-64-bit-en.msi'
 
 runs:
   using: 'composite'
