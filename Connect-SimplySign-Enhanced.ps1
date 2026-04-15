@@ -6,7 +6,7 @@
 param(
     [string]$OtpUri = $env:CERTUM_OTP_URI,
     [string]$UserId = $env:CERTUM_USERNAME,
-    [string]$ExePath = $env:CERTUM_EXE_PATH
+    [string]$InstallPath = $env:SS_PATH
 )
 
 # Validate required parameters
@@ -20,8 +20,10 @@ if (-not $UserId) {
     exit 1
 }
 
-if (-not $ExePath) {
-    $ExePath = "C:\Program Files\Certum\SimplySign Desktop\SimplySignDesktop.exe"
+# Resolve full exe path
+$ExePath = "$InstallPath\SimplySignDesktop.exe"
+if (-not (Test-Path $ExePath)) {
+    $ExePath = "$env:ProgramFiles\Certum\SimplySign Desktop\SimplySignDesktop.exe"
 }
 
 Write-Host "=== REGISTRY-ENHANCED TOTP AUTHENTICATION ==="
