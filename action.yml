@@ -120,7 +120,7 @@ runs:
     - name: Configure SimplySign Registry for Automation
       shell: pwsh
       run: |
-        & ".\configure-simplysign-registry.ps1"
+        & "${{ github.action_path }}\configure-simplysign-registry.ps1"
     - name: Authenticate with Certum SimplySign (TOTP Injection)
       shell: pwsh
       env:
@@ -131,7 +131,7 @@ runs:
       run: |
         Write-Host "Starting TOTP authentication and credential injection..."
         # Execute the enhanced authentication script
-        & ".\Connect-SimplySign-Enhanced.ps1"
+        & "${{ github.action_path }}\Connect-SimplySign-Enhanced.ps1"
     - name: Run Certificate Verification Check
       shell: pwsh
       env:
