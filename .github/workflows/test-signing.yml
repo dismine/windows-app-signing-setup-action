@@ -40,7 +40,7 @@ jobs:
           certum-key-id: ${{ secrets.CERTUM_KEY_ID }}
           simplysign-url: ${{ env.SIMPLYSIGN_URL }}
 
-      - name: Manual Signing Step (Example)
+      - name: Manual Signing Step
         shell: pwsh
         run: |
           Write-Host "✅ Signing setup complete."
