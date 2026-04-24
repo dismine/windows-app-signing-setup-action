@@ -103,6 +103,10 @@ runs:
 
         if ($logContent -notmatch $successPattern) {
             Write-Error "❌ Installation log does not confirm success patterns. MSI exit code 0 is inconclusive."
+            Write-Host "Full log output below:"
+            Write-Host "----------------------------------------------------------"
+            $logContent | Write-Host
+            Write-Host "----------------------------------------------------------"
             exit 1
         }
         
