@@ -2,6 +2,8 @@ name: Test Windows Signing Setup Action
 
 on:
   workflow_dispatch: # Allows you to run this workflow manually from the Actions tab
+  push:
+    branches: [ main ]
 
 # Set the URL as an environment variable for the cache key
 env:
