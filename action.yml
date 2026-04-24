@@ -102,11 +102,18 @@ runs:
         $successPattern = "Installation operation completed successfully|MainEngineThread is returning 0|Windows Installer installed the product"
 
         if ($logContent -notmatch $successPattern) {
-            Write-Error "❌ Installation log does not confirm success patterns. MSI exit code 0 is inconclusive."
-            Write-Host "Full log output below:"
-            Write-Host "----------------------------------------------------------"
-            $logContent | Write-Host
-            Write-Host "----------------------------------------------------------"
+            Write-Output "----------------------------------------------------------"
+            Write-Output "❌ FAILURE: Installation log does not confirm success patterns."
+            Write-Output "MSI exit code was 0, but the expected success strings were not found."
+            Write-Output "Full log output below:"
+            Write-Output "----------------------------------------------------------"
+
+            # Convert the array to a single string to ensure the full buffer is sent
+            $logContent | Out-String | Write-Output
+
+            Write-Output "----------------------------------------------------------"
+
+            Write-Error "Action failed due to inconclusive MSI logs."
             exit 1
         }
         
