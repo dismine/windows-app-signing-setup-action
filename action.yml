@@ -95,9 +95,18 @@ runs:
         }
         
         Write-Host "MSI installation process exited successfully after $(((Get-Date) - $startTime).TotalSeconds) seconds."
+
+        # Give the OS a moment to release the file handle and flush the buffer
+        Start-Sleep -Seconds 2
         
         # 1. Check for log success pattern (most reliable check)
-        $logContent = Get-Content $logFile -ErrorAction SilentlyContinue
+        $logContent = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
+
+        if ([string]::IsNullOrWhiteSpace($logContent)) {
+            Write-Error "❌ The log file is empty. The installer may have failed to initialize or the file is locked."
+            exit 1
+        }
+
         # This regex matches the patterns used in the original script
         $successPattern = "Installation operation completed successfully|MainEngineThread is returning 0|Windows Installer installed the product"
 
@@ -109,12 +118,14 @@ runs:
             Write-Output "----------------------------------------------------------"
 
             # Convert the array to a single string to ensure the full buffer is sent
-            $logContent | Out-String | Write-Output
+            Write-Output $logContent
 
             Write-Output "----------------------------------------------------------"
 
             Write-Error "Action failed due to inconclusive MSI logs."
             exit 1
+        } else {
+            Write-Host "✅ Installation verified successfully via log analysis."
         }
         
         # 2. Verify Installation Directory (robust check)
