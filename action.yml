@@ -124,8 +124,6 @@ runs:
 
             Write-Error "Action failed due to inconclusive MSI logs."
             exit 1
-        } else {
-            Write-Host "✅ Installation verified successfully via log analysis."
         }
         
         # 2. Verify Installation Directory (robust check)
