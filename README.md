@@ -32,10 +32,10 @@ jobs:
 
     steps:
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Cache SimplySign Installer
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           # This is the path where the installer will be saved by the action
           path: SimplySignDesktop.msi
