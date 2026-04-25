@@ -50,6 +50,20 @@ jobs:
           certum-key-id: ${{ secrets.CERTUM_KEY_ID }}
           simplysign-url: ${{ env.SIMPLYSIGN_URL }}
 
+      - name: Add SignTool to PATH
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\bin\" -Filter signtool.exe -Recurse | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
+          
+          if ($signtool) {
+              $signtoolDir = Split-Path $signtool.FullName
+              Write-Host "✅ Adding SignTool to PATH: $signtoolDir"
+              echo "$signtoolDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          } else {
+              Write-Error "❌ SignTool.exe not found in Windows SDK folders."
+              exit 1
+          }
+
       - name: Sign application
         run: |
           & 'C:\Program Files (x86)\Windows Kits\10\bin\x64\signtool.exe' sign `
