@@ -24,7 +24,7 @@ name: Sign Windows App
 
 # Set the URL as an environment variable for the cache key
 env:
-  SIMPLYSIGN_URL: 'https://files.certum.eu/software/SimplySignDesktop/Windows/9.3.2.67/SimplySignDesktop-9.3.2.67-64-bit-en.msi'
+  SIMPLYSIGN_URL: 'https://files.certum.eu/software/SimplySignDesktop/Windows/9.4.3.90/SimplySignDesktop-9.4.3.90-64-bit-en.msi'
 
 jobs:
   sign:
