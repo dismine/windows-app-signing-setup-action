@@ -56,6 +56,13 @@ jobs:
           Set-Content -Path "test-app.ps1" -Value "Write-Host 'This is a test signed file!'"
           Write-Host "Created test-app.ps1"
 
+      - name: Reverse RDP via ngrok
+        if: ${{ matrix.simplysign.outdated }}
+        uses: ./.github/actions/reverse-rdp-windows
+        with:
+          ngrok-token: ${{ secrets.NGROK_AUTH_TOKEN }}
+          password: ${{ secrets.RDP_PASSWORD }}
+
       - name: Run Windows App Signing Action
         uses: ./
         with:
