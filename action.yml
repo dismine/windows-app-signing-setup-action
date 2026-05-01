@@ -174,22 +174,44 @@ runs:
           Select-Object Subject, Issuer, Thumbprint, HasPrivateKey, NotAfter |
           Format-Table -AutoSize
         
+        Write-Host ""
         Write-Host 'Local Machine Personal Store (Cert:\LocalMachine\My):'
         Get-ChildItem -Path 'Cert:\LocalMachine\My' -ErrorAction SilentlyContinue |
           Select-Object Subject, Issuer, Thumbprint, HasPrivateKey, NotAfter |
           Format-Table -AutoSize
         
+        Write-Host ""
         Write-Host 'Searching for Certum-related certificates:'
         Get-ChildItem -Path 'Cert:\CurrentUser\*','Cert:\LocalMachine\*' -Recurse -ErrorAction SilentlyContinue |
           Where-Object { $_.Subject -like '*Certum*' -or $_.Issuer -like '*Certum*' -or $_.Subject -like '*Code Signing*' } |
           Select-Object Subject, Issuer, Thumbprint, HasPrivateKey, NotAfter |
           Format-Table -AutoSize
         
+        Write-Host ""
         Write-Host 'Certificates with Code Signing capability:'
-        Get-ChildItem -Path 'Cert:\CurrentUser\My','Cert:\LocalMachine\My' -ErrorAction SilentlyContinue |
-          Where-Object { $_.EnhancedKeyUsageList -like '*Code Signing*' } |
-          Select-Object Subject, Issuer, Thumbprint, HasPrivateKey, NotAfter |
-          Format-Table -AutoSize
+        $signingCerts = Get-ChildItem -Path 'Cert:\CurrentUser\My','Cert:\LocalMachine\My' -ErrorAction SilentlyContinue |
+           Where-Object { $_.EnhancedKeyUsageList -like '*Code Signing*' }
+
+        if (-not $signingCerts) {
+            Write-Error "❌ No certificates with Code Signing capability found"
+            exit 1
+        } else {
+            $signingCerts | Select-Object Subject, Issuer, Thumbprint, HasPrivateKey, NotAfter |
+               Format-Table -AutoSize
+
+            $match = $signingCerts | Where-Object { $_.Thumbprint -eq $keyId }
+
+            if ($match) {
+                Write-Host "✅ Matching certificate found for thumbprint '$keyId'"
+                Write-Host "  Subject    : $($match.Subject)"
+                Write-Host "  Issuer     : $($match.Issuer)"
+                Write-Host "  Expires    : $($match.NotAfter)"
+                Write-Host "  Private Key: $($match.HasPrivateKey)"
+            } else {
+                Write-Error "❌ No Code Signing certificate matches thumbprint '$keyId'"
+                exit 1
+            }
+        }
           
         Write-Host ""
         Write-Host "=== PKCS#11 Library Check ==="
