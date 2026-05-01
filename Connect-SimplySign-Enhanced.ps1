@@ -323,7 +323,7 @@ if (-not (Set-WindowFocus -Handle $loginDialog)) {
     Stop-Processing "Could not focus login dialog for credential injection"
 }
 # Small delay to ensure window is ready for input
-Start-Sleep -Milliseconds 2
+Start-Sleep -Seconds 2
 
 # Generate current TOTP code
 $otp = Get-TotpCode -Secret $Base32 -Digits $Digits -Period $Period -Algorithm $Algorithm
