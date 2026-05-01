@@ -244,10 +244,32 @@ function Set-WindowFocus {
 
 # Wait for the application to initialize
 Write-Host "Waiting for SimplySign Desktop to initialize..."
-Start-Sleep -Seconds 3
+$maxWaitSeconds = 30
+$elapsed = 0
+$windows = @()
 
-# Check window count and handle update dialog if present
-$windows = Get-SimplySignWindows
+while ($elapsed -lt $maxWaitSeconds) {
+    $windows = Get-SimplySignWindows
+    if ($windows.Count -gt 0) {
+        Write-Host "SimplySign Desktop ready after $elapsed seconds"
+        break
+    }
+
+    # Check process hasn't crashed while waiting
+    $proc.Refresh()
+    if ($proc.HasExited) {
+        Write-Error "SimplySign Desktop crashed during initialization (exit code: $($proc.ExitCode))"
+        exit 1
+    }
+
+    Start-Sleep -Seconds 1
+    $elapsed++
+}
+
+if ($windows.Count -eq 0) {
+    Write-Error "SimplySign Desktop did not open any windows within $maxWaitSeconds seconds"
+    exit 1
+}
 Write-Host "Visible windows detected: $($windows.Count)"
 
 switch ($windows.Count) {
