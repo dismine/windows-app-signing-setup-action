@@ -174,20 +174,17 @@ runs:
           Select-Object Subject, Issuer, Thumbprint, HasPrivateKey, NotAfter |
           Format-Table -AutoSize
         
-        Write-Host ""
         Write-Host 'Local Machine Personal Store (Cert:\LocalMachine\My):'
         Get-ChildItem -Path 'Cert:\LocalMachine\My' -ErrorAction SilentlyContinue |
           Select-Object Subject, Issuer, Thumbprint, HasPrivateKey, NotAfter |
           Format-Table -AutoSize
         
-        Write-Host ""
         Write-Host 'Searching for Certum-related certificates:'
         Get-ChildItem -Path 'Cert:\CurrentUser\*','Cert:\LocalMachine\*' -Recurse -ErrorAction SilentlyContinue |
           Where-Object { $_.Subject -like '*Certum*' -or $_.Issuer -like '*Certum*' -or $_.Subject -like '*Code Signing*' } |
           Select-Object Subject, Issuer, Thumbprint, HasPrivateKey, NotAfter |
           Format-Table -AutoSize
         
-        Write-Host ""
         Write-Host 'Certificates with Code Signing capability:'
         $signingCerts = Get-ChildItem -Path 'Cert:\CurrentUser\My','Cert:\LocalMachine\My' -ErrorAction SilentlyContinue |
            Where-Object { $_.EnhancedKeyUsageList -like '*Code Signing*' }
