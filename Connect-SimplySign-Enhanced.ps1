@@ -152,6 +152,18 @@ function Get-TotpCode {
 Write-Host "Launching SimplySign Desktop..."
 Write-Host "Registry pre-configuration should auto-open login dialog"
 $proc = Start-Process -FilePath $ExePath -PassThru
+if (-not $proc) {
+    Write-Error "Failed to start SimplySign Desktop"
+    exit 1
+}
+
+# Verify process is actually running
+Start-Sleep -Milliseconds 500
+$proc.Refresh()
+if ($proc.HasExited) {
+    Write-Error "SimplySign Desktop exited immediately after launch (exit code: $($proc.ExitCode))"
+    exit 1
+}
 Write-Host "Process started with ID: $($proc.Id)"
 Write-Host ""
 
