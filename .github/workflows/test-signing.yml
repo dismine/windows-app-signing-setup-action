@@ -16,12 +16,33 @@ jobs:
             url: 'https://files.certum.eu/software/SimplySignDesktop/Windows/9.4.3.90/SimplySignDesktop-9.4.3.90-64-bit-en.msi'
           - version: '9.4.2.86' # Testing update proposal
             url: 'https://files.certum.eu/software/SimplySignDesktop/Windows/9.4.2.86/SimplySignDesktop-9.4.2.86-64-bit-en.msi'
+            outdated: true
 
     name: test-sign (SimplySign ${{ matrix.simplysign.version }})
 
     steps:
       - name: Checkout Action Code
         uses: actions/checkout@v6
+
+      - name: Verify this is the latest SimplySign version
+        if: ${{ !matrix.simplysign.outdated }}
+        shell: pwsh
+        run: |
+          $base = "https://files.certum.eu/software/SimplySignDesktop/Windows"
+          $html = Invoke-WebRequest -Uri "$base/" -UseBasicParsing
+          $versions = [regex]::Matches($html.Content, 'href="([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/"') `
+            | ForEach-Object { $_.Groups[1].Value }
+          $actualLatest = $versions | Sort-Object { [version]$_ } | Select-Object -Last 1
+
+          Write-Host "Expected latest: ${{ matrix.simplysign.version }}"
+          Write-Host "Actual latest:   $actualLatest"
+
+          if ($actualLatest -ne "${{ matrix.simplysign.version }}") {
+            Write-Error "❌ Version mismatch! Update the matrix: latest is $actualLatest"
+            exit 1
+          }
+
+          Write-Host "✅ Version ${{ matrix.simplysign.version }} is confirmed latest."
 
       - name: Cache SimplySign Installer
         uses: actions/cache@v5
