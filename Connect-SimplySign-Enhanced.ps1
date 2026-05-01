@@ -155,41 +155,138 @@ $proc = Start-Process -FilePath $ExePath -PassThru
 Write-Host "Process started with ID: $($proc.Id)"
 Write-Host ""
 
+# Create WScript.Shell for window interaction
+$wshell = New-Object -ComObject WScript.Shell
+
+# WinAPI for reliable window management
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Collections.Generic;
+using System.Text;
+public class WinAPI {
+    [DllImport("user32.dll")]
+    public static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
+    [DllImport("user32.dll")]
+    public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    public static List<IntPtr> GetVisibleWindows(uint pid) {
+        var list = new List<IntPtr>();
+        EnumWindows((hWnd, lParam) => {
+            uint wPid;
+            GetWindowThreadProcessId(hWnd, out wPid);
+            if (wPid == pid && IsWindowVisible(hWnd)) {
+                var sb = new StringBuilder(256);
+                GetWindowText(hWnd, sb, 256);
+                if (sb.Length > 0) list.Add(hWnd);
+            }
+            return true;
+        }, IntPtr.Zero);
+        return list;
+    }
+}
+"@
+
+function Get-SimplySignWindows {
+    return [WinAPI]::GetVisibleWindows([uint32]$proc.Id)
+}
+
+function Stop-Processing {
+    param([string]$Reason)
+    Write-Host "ERROR: $Reason"
+    exit 1
+}
+
+function Set-WindowFocus {
+    param(
+        [IntPtr]$Handle,
+        [int]$MaxAttempts = 10,
+        [int]$DelayMs = 500
+    )
+
+    for ($i = 1; $i -le $MaxAttempts; $i++) {
+        [WinAPI]::SetForegroundWindow($Handle) | Out-Null
+        Start-Sleep -Milliseconds $DelayMs
+
+        $foreground = [WinAPI]::GetForegroundWindow()
+        if ($foreground -eq $Handle) {
+            Write-Host "Window focused successfully on attempt $i"
+            Write-Host ""
+            return $true
+        }
+
+        Write-Host "Focus attempt $i of $MaxAttempts failed, retrying..."
+    }
+
+    return $false
+}
+
 # Wait for the application to initialize
 Write-Host "Waiting for SimplySign Desktop to initialize..."
 Start-Sleep -Seconds 3
 
-# Create WScript.Shell for window interaction
-$wshell = New-Object -ComObject WScript.Shell
+# Check window count and handle update dialog if present
+$windows = Get-SimplySignWindows
+Write-Host "Visible windows detected: $($windows.Count)"
 
-# Try to focus the SimplySign Desktop window
-Write-Host "Attempting to focus SimplySign Desktop window..."
-$focused = $false
+switch ($windows.Count) {
+    0 {
+        Stop-Processing "SimplySign Desktop failed to open any windows"
+        break
+    }
+    1 {
+        Write-Host "Single window detected - skipping update dialog handling"
+        break
+    }
+    2 {
+        Write-Host "Two windows detected - update dialog likely present, dismissing..."
 
-# Method 1: Focus by process ID (most reliable)
-$focused = $wshell.AppActivate($proc.Id)
+        $updateDialog = $windows[0]
+        if (-not (Set-WindowFocus -Handle $updateDialog)) {
+            Stop-Processing "Could not focus update dialog"
+        }
 
-# Method 2: Focus by window title (fallback)
-if (-not $focused) {
-    $focused = $wshell.AppActivate('SimplySign Desktop')
+        Start-Sleep -Milliseconds 300
+        $wshell.SendKeys("{TAB}")
+        Start-Sleep -Milliseconds 200
+        $wshell.SendKeys("{ENTER}")
+        Write-Host "Dismissed first window"
+        Start-Sleep -Seconds 2
+
+        $windows = Get-SimplySignWindows
+        Write-Host "Visible windows after dismissal: $($windows.Count)"
+
+        if ($windows.Count -eq 0) {
+            Stop-Processing "SimplySign Desktop closed after dismissing update dialog"
+        }
+        if ($windows.Count -ne 1) {
+            Stop-Processing "Unexpected window count after dismissing update dialog: $($windows.Count)"
+        }
+
+        Write-Host "Update dialog dismissed successfully"
+        break
+    }
+    default {
+        Stop-Processing "Unexpected number of windows: $($windows.Count)"
+        break
+    }
 }
 
-# Method 3: Multiple attempts with slight delays
-for ($i = 0; (-not $focused) -and ($i -lt 10); $i++) {
-    Start-Sleep -Milliseconds 500
-    $focused = $wshell.AppActivate($proc.Id) -or $wshell.AppActivate('SimplySign Desktop')
-    Write-Host "Focus attempt $($i + 1): $focused"
+# Exactly 1 window remains - focus it for credential injection
+Write-Host "Focusing login dialog for credential injection..."
+$loginDialog = $windows[0]
+if (-not (Set-WindowFocus -Handle $loginDialog)) {
+    Stop-Processing "Could not focus login dialog for credential injection"
 }
-
-if (-not $focused) {
-    Write-Host "ERROR: Could not bring SimplySign Desktop to foreground"
-    Write-Host "Login dialog may not be visible for credential injection"
-    exit 1
-}
-
-Write-Host "Successfully focused SimplySign Desktop window"
-Write-Host ""
-
 # Small delay to ensure window is ready for input
 Start-Sleep -Milliseconds 400
 
