@@ -6,6 +6,7 @@
 param(
     [string]$OtpUri = $env:CERTUM_OTP_URI,
     [string]$UserId = $env:CERTUM_USERNAME,
+    [string]$KeyId = $env:CERTUM_KEY_ID,
     [string]$InstallPath = $env:SS_PATH
 )
 
@@ -322,7 +323,7 @@ if (-not (Set-WindowFocus -Handle $loginDialog)) {
     Stop-Processing "Could not focus login dialog for credential injection"
 }
 # Small delay to ensure window is ready for input
-Start-Sleep -Milliseconds 400
+Start-Sleep -Milliseconds 2
 
 # Generate current TOTP code
 $otp = Get-TotpCode -Secret $Base32 -Digits $Digits -Period $Period -Algorithm $Algorithm
@@ -346,8 +347,31 @@ Write-Host "Credentials injected successfully"
 Write-Host ""
 
 # Wait for authentication to process
-Write-Host "Waiting for authentication to complete..."
-Start-Sleep -Seconds 5
+Write-Host "Waiting for certificate to become available..."
+$maxWaitSeconds = 60
+$elapsed = 0
+$match = $null
+
+while ($elapsed -lt $maxWaitSeconds) {
+    $signingCerts = Get-ChildItem -Path 'Cert:\CurrentUser\My' -ErrorAction SilentlyContinue |
+        Where-Object { $_.EnhancedKeyUsageList -like '*Code Signing*' }
+
+    $match = $signingCerts | Where-Object { $_.Thumbprint -eq $KeyId }
+
+    if ($match) {
+        Write-Host "Certificate available after $elapsed seconds"
+        break
+    }
+
+    Write-Host "Certificate not yet available, retrying... ($elapsed/$maxWaitSeconds seconds)"
+    Start-Sleep -Seconds 5
+    $elapsed += 5
+}
+
+if (-not $match) {
+    Write-Error "Certificate with thumbprint '$KeyId' not found after $maxWaitSeconds seconds"
+    exit 1
+}
 
 # Verify SimplySign Desktop is still running
 $stillRunning = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue

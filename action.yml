@@ -147,6 +147,7 @@ runs:
         # Pass inputs as environment variables for the script
         CERTUM_OTP_URI: ${{ inputs.certum-otp-uri }}
         CERTUM_USERNAME: ${{ inputs.certum-username }}
+        CERTUM_KEY_ID: ${{ inputs.certum-key-id }}
       run: |
         Write-Host "Starting TOTP authentication and credential injection..."
         # Execute the enhanced authentication script
