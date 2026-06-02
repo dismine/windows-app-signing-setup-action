@@ -1,5 +1,8 @@
 # Changelog
 
+## v1.2.3
+- Fix intermittent authentication failure where the signing certificate never became available after a successful login attempt
+
 ## v1.2.2
 - Fix incorrect delay
 

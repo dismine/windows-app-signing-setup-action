@@ -325,6 +325,14 @@ if (-not (Set-WindowFocus -Handle $loginDialog)) {
 # Small delay to ensure window is ready for input
 Start-Sleep -Seconds 2
 
+# Ensure the TOTP code won't expire during injection and server round-trip
+$secondsLeft = $Period - ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() % $Period)
+Write-Host "TOTP window: $secondsLeft seconds remaining (period: $Period s)"
+if ($secondsLeft -lt 10) {
+    Write-Host "Near end of TOTP window — waiting $($secondsLeft + 1)s for next period to avoid expiry race..."
+    Start-Sleep -Seconds ($secondsLeft + 1)
+}
+
 # Generate current TOTP code
 $otp = Get-TotpCode -Secret $Base32 -Digits $Digits -Period $Period -Algorithm $Algorithm
 Write-Host "TOTP code generated successfully (algorithm: $Algorithm)"
@@ -344,13 +352,16 @@ Start-Sleep -Milliseconds 200
 $wshell.SendKeys("{ENTER}")
 
 Write-Host "Credentials injected successfully"
+$secondsLeftAfterInject = $Period - ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() % $Period)
+Write-Host "TOTP validity remaining after inject: $secondsLeftAfterInject s"
 Write-Host ""
 
 # Wait for authentication to process
 Write-Host "Waiting for certificate to become available..."
-$maxWaitSeconds = 60
+$maxWaitSeconds = 90
 $elapsed = 0
 $match = $null
+$retryDone = $false
 
 while ($elapsed -lt $maxWaitSeconds) {
     $signingCerts = Get-ChildItem -Path 'Cert:\CurrentUser\My' -ErrorAction SilentlyContinue |
@@ -361,6 +372,45 @@ while ($elapsed -lt $maxWaitSeconds) {
     if ($match) {
         Write-Host "Certificate available after $elapsed seconds"
         break
+    }
+
+    # After 30 s with no cert, try re-injecting with a fresh TOTP code
+    if ($elapsed -eq 30 -and -not $retryDone) {
+        $retryDone = $true
+        Write-Host ""
+        Write-Host "No certificate after 30 s — retrying credential injection with fresh TOTP..."
+
+        $retryWindows = Get-SimplySignWindows
+        if ($retryWindows.Count -eq 1) {
+            $retryHandle = $retryWindows[0]
+            if (Set-WindowFocus -Handle $retryHandle) {
+                $secondsLeft = $Period - ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() % $Period)
+                Write-Host "TOTP window: $secondsLeft seconds remaining (period: $Period s)"
+                if ($secondsLeft -lt 10) {
+                    Write-Host "Near end of TOTP window — waiting $($secondsLeft + 1)s for next period..."
+                    Start-Sleep -Seconds ($secondsLeft + 1)
+                }
+
+                $otp = Get-TotpCode -Secret $Base32 -Digits $Digits -Period $Period -Algorithm $Algorithm
+                Write-Host "Fresh TOTP code generated (retry)"
+
+                $wshell.SendKeys($UserId)
+                Start-Sleep -Milliseconds 200
+                $wshell.SendKeys("{TAB}")
+                Start-Sleep -Milliseconds 200
+                $wshell.SendKeys($otp)
+                Start-Sleep -Milliseconds 200
+                $wshell.SendKeys("{ENTER}")
+
+                $secondsLeftAfterInject = $Period - ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() % $Period)
+                Write-Host "Retry credentials injected. TOTP validity remaining: $secondsLeftAfterInject s"
+                Write-Host ""
+            } else {
+                Write-Host "Could not focus SimplySign window for retry — continuing to poll..."
+            }
+        } else {
+            Write-Host "SimplySign window not available for retry (count: $($retryWindows.Count)) — continuing to poll..."
+        }
     }
 
     Write-Host "Certificate not yet available, retrying... ($elapsed/$maxWaitSeconds seconds)"
