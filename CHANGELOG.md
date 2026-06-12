@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.2.4
+- Fix intermittent "Invalid user name or token" authentication failures: credentials are now entered via the clipboard (Ctrl+V) instead of streamed keystrokes, which could drop or reorder characters on the Qt login fields
+- The one-time code is now submitted early in its ~29-second validity window (waiting for a fresh TOTP period when little time remains) so it cannot go stale before the server validates it
+- Authentication now recovers from any modal dialog (the "Invalid user name or token" error or the "New version" update prompt) by dismissing it and re-submitting with a fresh code, instead of giving up
+- Added an opt-in `capture-diagnostics` input (default `false`) that saves screenshots during authentication for debugging; window titles are always logged
+- Test workflow now deterministically exercises and asserts the two-window recovery path
+
 ## v1.2.3
 - Fix intermittent authentication failure where the signing certificate never became available after a successful login attempt
 

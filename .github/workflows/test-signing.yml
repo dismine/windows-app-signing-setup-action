@@ -20,6 +20,14 @@ jobs:
 
     name: test-sign (SimplySign ${{ matrix.simplysign.version }})
 
+    # Test-only hook: force the first token submission to be invalid on the
+    # "latest" entry so the "Invalid user name or token" two-window recovery path
+    # is exercised deterministically. The "outdated" entry naturally raises the
+    # update dialog instead, so it is left untouched. Set at job level so it
+    # reliably propagates into the composite action's steps.
+    env:
+      SS_TEST_FORCE_BAD_FIRST_TOKEN: ${{ !matrix.simplysign.outdated }}
+
     steps:
       - name: Checkout Action Code
         uses: actions/checkout@v6
@@ -63,6 +71,28 @@ jobs:
           certum-otp-uri: ${{ secrets.CERTUM_OTP_URI }}
           certum-key-id: ${{ secrets.CERTUM_KEY_ID }}
           simplysign-url: ${{ matrix.simplysign.url }}
+          capture-diagnostics: 'true'
+
+      - name: Assert two-window recovery path ran
+        # Only the forced-bad-token ("latest") entry is guaranteed to hit a modal
+        # popup; the script sets SS_DIALOG_HANDLED=true when it recovers from one.
+        if: ${{ !matrix.simplysign.outdated }}
+        shell: pwsh
+        run: |
+          if ($env:SS_DIALOG_HANDLED -eq 'true') {
+            Write-Host "✅ Modal popup was detected and recovered from (two-window path exercised)."
+          } else {
+            Write-Error "❌ Expected the invalid-token dialog to be handled, but SS_DIALOG_HANDLED was not set. The recovery path did not run."
+            exit 1
+          }
+
+      - name: Upload diagnostic screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simplysign-diag-${{ matrix.simplysign.version }}
+          path: simplysign-diag-*.png
+          if-no-files-found: ignore
 
       #- name: Reverse RDP via ngrok
       #  if: ${{ matrix.simplysign.outdated }}

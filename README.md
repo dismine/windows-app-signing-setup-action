@@ -14,6 +14,7 @@ This action installs the SimplySign Desktop app, configures required registry ke
 | `certum-otp-uri` | ✅ | The `otpauth://` TOTP URI for your SimplySign account. |
 | `certum-key-id` | ✅ | The SHA1 thumbprint of your signing certificate. |
 | `simplysign-url` | ❌ | Optional direct URL to download the SimplySign Desktop MSI. |
+| `capture-diagnostics` | ❌ | Optional. Set to `true` to save authentication screenshots for debugging. Off by default — the login dialog shows your account e-mail. |
 
 ---
 

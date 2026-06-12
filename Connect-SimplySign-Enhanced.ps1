@@ -51,8 +51,8 @@ try {
     $q = @{}
     foreach ($part in $uri.Query.TrimStart('?') -split '&') {
         $kv = $part -split '=', 2
-        if ($kv.Count -eq 2) { 
-            $q[$kv[0]] = [Uri]::UnescapeDataString($kv[1]) 
+        if ($kv.Count -eq 2) {
+            $q[$kv[0]] = [Uri]::UnescapeDataString($kv[1])
         }
     }
 }
@@ -190,7 +190,11 @@ public class WinAPI {
     public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 
     public static List<IntPtr> GetVisibleWindows(uint pid) {
         var list = new List<IntPtr>();
@@ -243,6 +247,164 @@ function Set-WindowFocus {
     return $false
 }
 
+# ------------------------------------------------------------------
+# Helpers added for reliable credential injection and popup recovery
+# ------------------------------------------------------------------
+
+function Get-WindowTitle {
+    param([IntPtr]$Handle)
+    $sb = New-Object System.Text.StringBuilder 256
+    [WinAPI]::GetWindowText($Handle, $sb, 256) | Out-Null
+    return $sb.ToString()
+}
+
+function Write-WindowTitles {
+    param([string]$Context)
+    $wins = @(Get-SimplySignWindows)
+    Write-Host "[$Context] Visible windows: $($wins.Count)"
+    foreach ($h in $wins) {
+        Write-Host "  - handle=$h title='$(Get-WindowTitle -Handle $h)'"
+    }
+}
+
+# The login dialog is substantially larger than the Yes/No update or OK error
+# message boxes, so the largest-area window is the login window. All three share
+# the title "SimplySign Desktop", so size is the reliable discriminator.
+function Get-LoginWindow {
+    param([System.Collections.IEnumerable]$Windows)
+    $best = [IntPtr]::Zero
+    $bestArea = -1
+    foreach ($h in $Windows) {
+        $rect = New-Object 'WinAPI+RECT'
+        [WinAPI]::GetWindowRect($h, [ref]$rect) | Out-Null
+        $area = ($rect.Right - $rect.Left) * ($rect.Bottom - $rect.Top)
+        if ($area -gt $bestArea) { $bestArea = $area; $best = $h }
+    }
+    return $best
+}
+
+# Diagnostic screenshot — opt-in only (login email is visible, so never on by
+# default for public users). Enabled via CAPTURE_DIAGNOSTICS=true in our tests.
+function Save-Screenshot {
+    param([string]$Stage)
+    if ($env:CAPTURE_DIAGNOSTICS -ne 'true') { return }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+        $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+        $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+        $safe = ($Stage -replace '[^A-Za-z0-9_-]', '_')
+        $path = Join-Path (Get-Location) "simplysign-diag-$safe.png"
+        $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+        $g.Dispose(); $bmp.Dispose()
+        Write-Host "Saved diagnostic screenshot: $path"
+    } catch {
+        Write-Host "Screenshot capture failed: $($_.Exception.Message)"
+    }
+}
+
+# Record (for the test workflow) that a modal popup recovery path actually ran.
+function Set-DialogHandledFlag {
+    if ($env:GITHUB_ENV -and (Test-Path $env:GITHUB_ENV)) {
+        "SS_DIALOG_HANDLED=true" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+    }
+}
+
+# Generate a TOTP code with a healthy slice of its ~Period-second window left.
+# SimplySign shows a ~29s window and validates a few seconds after submit, so a
+# code sent in the back half of the window can be rejected as stale. If under
+# 20s remain, wait for the next period so we always submit early in the window.
+function Get-FreshTotpCode {
+    $secondsLeft = $Period - ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() % $Period)
+    Write-Host "TOTP window: $secondsLeft s remaining (period: $Period s)"
+    if ($secondsLeft -lt 20) {
+        $wait = $secondsLeft + 1
+        Write-Host "Under 20s left — waiting ${wait}s for a fresh period to submit early in the window..."
+        Start-Sleep -Seconds $wait
+    }
+    $code = Get-TotpCode -Secret $Base32 -Digits $Digits -Period $Period -Algorithm $Algorithm
+    $left = $Period - ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() % $Period)
+    Write-Host "TOTP generated (algorithm: $Algorithm) with ~${left}s of validity"
+    return $code
+}
+
+# Enter credentials via the clipboard (Ctrl+V) instead of streaming keystrokes.
+# SendKeys on Qt fields intermittently drops/reorders characters (a single lost
+# digit => "Invalid user name or token"); an atomic paste removes that failure
+# class. Fields are cleared first to drop any pre-filled/residual content.
+function Invoke-CredentialSubmit {
+    param([IntPtr]$Handle, [string]$Otp)
+
+    if (-not (Set-WindowFocus -Handle $Handle)) {
+        Write-Host "WARNING: could not focus login dialog before submit"
+    }
+    Start-Sleep -Milliseconds 400
+
+    # ID field (focused on a fresh dialog): clear, then paste username
+    Set-Clipboard -Value $UserId
+    $wshell.SendKeys("^a"); Start-Sleep -Milliseconds 120
+    $wshell.SendKeys("{DEL}"); Start-Sleep -Milliseconds 120
+    $wshell.SendKeys("^v"); Start-Sleep -Milliseconds 250
+
+    # Move to the Token field: clear, then paste the one-time code
+    $wshell.SendKeys("{TAB}"); Start-Sleep -Milliseconds 250
+    Set-Clipboard -Value $Otp
+    $wshell.SendKeys("^a"); Start-Sleep -Milliseconds 120
+    $wshell.SendKeys("{DEL}"); Start-Sleep -Milliseconds 120
+    $wshell.SendKeys("^v"); Start-Sleep -Milliseconds 250
+
+    # Submit
+    $wshell.SendKeys("{ENTER}")
+    Start-Sleep -Milliseconds 300
+
+    # Clear the clipboard so the secret token does not linger
+    Set-Clipboard -Value ' '
+}
+
+# Dismiss a modal popup (update "New version" dialog OR "Invalid user name or
+# token" error). Titles are identical, so we cannot tell them apart — instead
+# use a ladder that re-checks after each step and NEVER presses the update
+# dialog's default "Yes" (which would start a download): Alt+N selects "No";
+# Tab+Space activates the focused "No"; Enter (last) can only reach an OK-only
+# error box once any Yes/No dialog is already gone. Returns $true if cleared.
+function Resolve-Popup {
+    param([IntPtr]$LoginHandle)
+
+    $popups = @(Get-SimplySignWindows | Where-Object { $_ -ne $LoginHandle })
+    if ($popups.Count -eq 0) { return $false }
+
+    $popup = $popups[0]
+    Write-Host "Modal popup detected: handle=$popup title='$(Get-WindowTitle -Handle $popup)'"
+    Save-Screenshot -Stage "popup"
+
+    $ladder = @(
+        @{ Keys = '%n';      Desc = 'Alt+N (No)' },
+        @{ Keys = '{TAB} ';  Desc = 'Tab + Space (activate No)' },
+        @{ Keys = '{ENTER}'; Desc = 'Enter (OK on error dialog)' }
+    )
+
+    foreach ($step in $ladder) {
+        Set-WindowFocus -Handle $popup | Out-Null
+        Start-Sleep -Milliseconds 200
+        $wshell.SendKeys($step.Keys)
+        Write-Host "Dismissal attempt: $($step.Desc)"
+        Start-Sleep -Milliseconds 800
+
+        $remaining = @(Get-SimplySignWindows | Where-Object { $_ -ne $LoginHandle })
+        if ($remaining.Count -eq 0) {
+            Write-Host "Popup dismissed via $($step.Desc)"
+            Set-DialogHandledFlag
+            return $true
+        }
+        $popup = $remaining[0]
+    }
+
+    Write-Host "WARNING: popup still present after dismissal ladder"
+    return $false
+}
+
 # Wait for the application to initialize
 Write-Host "Waiting for SimplySign Desktop to initialize..."
 $maxWaitSeconds = 30
@@ -250,7 +412,7 @@ $elapsed = 0
 $windows = @()
 
 while ($elapsed -lt $maxWaitSeconds) {
-    $windows = Get-SimplySignWindows
+    $windows = @(Get-SimplySignWindows)
     if ($windows.Count -gt 0) {
         Write-Host "SimplySign Desktop ready after $elapsed seconds"
         break
@@ -268,100 +430,57 @@ while ($elapsed -lt $maxWaitSeconds) {
 }
 
 if ($windows.Count -eq 0) {
+    Save-Screenshot -Stage "no-window"
     Write-Error "SimplySign Desktop did not open any windows within $maxWaitSeconds seconds"
     exit 1
 }
-Write-Host "Visible windows detected: $($windows.Count)"
+Write-WindowTitles -Context "initial detection"
 
-switch ($windows.Count) {
-    0 {
-        Stop-Processing "SimplySign Desktop failed to open any windows"
-        break
-    }
-    1 {
-        Write-Host "Single window detected - skipping update dialog handling"
-        break
-    }
-    2 {
-        Write-Host "Two windows detected - update dialog likely present, dismissing..."
+# Identify the login window (largest); any other visible window is a modal popup.
+$loginHandle = Get-LoginWindow -Windows $windows
+Write-Host "Login window: handle=$loginHandle title='$(Get-WindowTitle -Handle $loginHandle)'"
 
-        $updateDialog = $windows[0]
-        if (-not (Set-WindowFocus -Handle $updateDialog)) {
-            Stop-Processing "Could not focus update dialog"
-        }
-
-        Start-Sleep -Milliseconds 300
-        $wshell.SendKeys("{TAB}")
-        Start-Sleep -Milliseconds 200
-        $wshell.SendKeys("{ENTER}")
-        Write-Host "Dismissed first window"
-        Start-Sleep -Seconds 2
-
-        $windows = Get-SimplySignWindows
-        Write-Host "Visible windows after dismissal: $($windows.Count)"
-
-        if ($windows.Count -eq 0) {
-            Stop-Processing "SimplySign Desktop closed after dismissing update dialog"
-        }
-        if ($windows.Count -ne 1) {
-            Stop-Processing "Unexpected window count after dismissing update dialog: $($windows.Count)"
-        }
-
-        Write-Host "Update dialog dismissed successfully"
-        break
-    }
-    default {
-        Stop-Processing "Unexpected number of windows: $($windows.Count)"
-        break
-    }
-}
-
-# Exactly 1 window remains - focus it for credential injection
-Write-Host "Focusing login dialog for credential injection..."
-$loginDialog = $windows[0]
-if (-not (Set-WindowFocus -Handle $loginDialog)) {
+if (-not (Set-WindowFocus -Handle $loginHandle)) {
     Stop-Processing "Could not focus login dialog for credential injection"
 }
 # Small delay to ensure window is ready for input
 Start-Sleep -Seconds 2
 
-# Ensure the TOTP code won't expire during injection and server round-trip
-$secondsLeft = $Period - ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() % $Period)
-Write-Host "TOTP window: $secondsLeft seconds remaining (period: $Period s)"
-if ($secondsLeft -lt 10) {
-    Write-Host "Near end of TOTP window — waiting $($secondsLeft + 1)s for next period to avoid expiry race..."
-    Start-Sleep -Seconds ($secondsLeft + 1)
+# Give the async version-check a brief chance to raise the "New version" dialog
+# and dismiss it before we inject, so it cannot steal focus mid-submit.
+$settle = 0
+while ($settle -lt 6) {
+    if (Resolve-Popup -LoginHandle $loginHandle) {
+        Set-WindowFocus -Handle $loginHandle | Out-Null
+        Start-Sleep -Milliseconds 500
+    }
+    Start-Sleep -Seconds 1
+    $settle++
 }
 
-# Generate current TOTP code
-$otp = Get-TotpCode -Secret $Base32 -Digits $Digits -Period $Period -Algorithm $Algorithm
-Write-Host "TOTP code generated successfully (algorithm: $Algorithm)"
+# First credential submission
+$forceBad = ($env:SS_TEST_FORCE_BAD_FIRST_TOKEN -eq 'true')
+$otp = Get-FreshTotpCode
+if ($forceBad) {
+    Write-Host "TEST HOOK: SS_TEST_FORCE_BAD_FIRST_TOKEN=true — first submit uses a deliberately invalid token"
+    # Guarantee a value different from the real code so it is always rejected.
+    $submitOtp = if ($otp -eq ('0' * $Digits)) { '1' * $Digits } else { '0' * $Digits }
+} else {
+    $submitOtp = $otp
+}
+
+Write-Host "Injecting credentials (clipboard paste): ID -> TAB -> Token -> ENTER..."
+Invoke-CredentialSubmit -Handle $loginHandle -Otp $submitOtp
+Write-Host "Credentials submitted"
 Write-Host ""
 
-# Inject credentials: Username + TAB + TOTP + ENTER
-Write-Host "Injecting credentials into login dialog..."
-Write-Host "Sending: Username -> TAB -> TOTP -> ENTER"
-
-# Send the credential sequence
-$wshell.SendKeys($UserId)
-Start-Sleep -Milliseconds 200
-$wshell.SendKeys("{TAB}")
-Start-Sleep -Milliseconds 200
-$wshell.SendKeys($otp)
-Start-Sleep -Milliseconds 200
-$wshell.SendKeys("{ENTER}")
-
-Write-Host "Credentials injected successfully"
-$secondsLeftAfterInject = $Period - ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() % $Period)
-Write-Host "TOTP validity remaining after inject: $secondsLeftAfterInject s"
-Write-Host ""
-
-# Wait for authentication to process
+# Wait for the certificate; recover from any modal popup (invalid token / update)
 Write-Host "Waiting for certificate to become available..."
-$maxWaitSeconds = 90
+$maxWaitSeconds = 120
 $elapsed = 0
 $match = $null
-$retryDone = $false
+$retries = 0
+$maxRetries = 3
 
 while ($elapsed -lt $maxWaitSeconds) {
     $signingCerts = Get-ChildItem -Path 'Cert:\CurrentUser\My' -ErrorAction SilentlyContinue |
@@ -374,43 +493,21 @@ while ($elapsed -lt $maxWaitSeconds) {
         break
     }
 
-    # After 30 s with no cert, try re-injecting with a fresh TOTP code
-    if ($elapsed -eq 30 -and -not $retryDone) {
-        $retryDone = $true
+    # A modal popup means the previous submit was rejected (or an update dialog
+    # appeared). Dismiss it and re-submit with a fresh TOTP code.
+    $popups = @(Get-SimplySignWindows | Where-Object { $_ -ne $loginHandle })
+    if ($popups.Count -gt 0 -and $retries -lt $maxRetries) {
+        $retries++
         Write-Host ""
-        Write-Host "No certificate after 30 s — retrying credential injection with fresh TOTP..."
-
-        $retryWindows = Get-SimplySignWindows
-        if ($retryWindows.Count -eq 1) {
-            $retryHandle = $retryWindows[0]
-            if (Set-WindowFocus -Handle $retryHandle) {
-                $secondsLeft = $Period - ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() % $Period)
-                Write-Host "TOTP window: $secondsLeft seconds remaining (period: $Period s)"
-                if ($secondsLeft -lt 10) {
-                    Write-Host "Near end of TOTP window — waiting $($secondsLeft + 1)s for next period..."
-                    Start-Sleep -Seconds ($secondsLeft + 1)
-                }
-
-                $otp = Get-TotpCode -Secret $Base32 -Digits $Digits -Period $Period -Algorithm $Algorithm
-                Write-Host "Fresh TOTP code generated (retry)"
-
-                $wshell.SendKeys($UserId)
-                Start-Sleep -Milliseconds 200
-                $wshell.SendKeys("{TAB}")
-                Start-Sleep -Milliseconds 200
-                $wshell.SendKeys($otp)
-                Start-Sleep -Milliseconds 200
-                $wshell.SendKeys("{ENTER}")
-
-                $secondsLeftAfterInject = $Period - ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() % $Period)
-                Write-Host "Retry credentials injected. TOTP validity remaining: $secondsLeftAfterInject s"
-                Write-Host ""
-            } else {
-                Write-Host "Could not focus SimplySign window for retry — continuing to poll..."
-            }
-        } else {
-            Write-Host "SimplySign window not available for retry (count: $($retryWindows.Count)) — continuing to poll..."
+        Write-Host "Popup detected during wait (retry $retries/$maxRetries) — recovering..."
+        if (Resolve-Popup -LoginHandle $loginHandle) {
+            Set-WindowFocus -Handle $loginHandle | Out-Null
+            Start-Sleep -Milliseconds 500
+            $freshOtp = Get-FreshTotpCode
+            Write-Host "Re-submitting credentials with a fresh TOTP..."
+            Invoke-CredentialSubmit -Handle $loginHandle -Otp $freshOtp
         }
+        Write-Host ""
     }
 
     Write-Host "Certificate not yet available, retrying... ($elapsed/$maxWaitSeconds seconds)"
@@ -419,6 +516,8 @@ while ($elapsed -lt $maxWaitSeconds) {
 }
 
 if (-not $match) {
+    Save-Screenshot -Stage "final-failure"
+    Write-WindowTitles -Context "final failure"
     Write-Error "Certificate with thumbprint '$KeyId' not found after $maxWaitSeconds seconds"
     exit 1
 }
