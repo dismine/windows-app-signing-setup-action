@@ -363,6 +363,27 @@ function Invoke-CredentialSubmit {
     Set-Clipboard -Value ' '
 }
 
+# Re-enter only the token after dismissing an "Invalid user name or token"
+# dialog. SimplySign leaves the ID value intact and the (now empty) Token field
+# focused, so the full ID->Tab->Token sequence would instead paste the username
+# into the focused Token field. Here we paste only the fresh code into the
+# already-focused Token field and submit — no window re-focus and no Tab (either
+# would move input off the Token field).
+function Invoke-TokenResubmit {
+    param([string]$Otp)
+
+    Set-Clipboard -Value $Otp
+    $wshell.SendKeys("^a"); Start-Sleep -Milliseconds 120
+    $wshell.SendKeys("{DEL}"); Start-Sleep -Milliseconds 120
+    $wshell.SendKeys("^v"); Start-Sleep -Milliseconds 250
+
+    $wshell.SendKeys("{ENTER}")
+    Start-Sleep -Milliseconds 300
+
+    # Clear the clipboard so the secret token does not linger
+    Set-Clipboard -Value ' '
+}
+
 # Dismiss a modal popup (update "New version" dialog OR "Invalid user name or
 # token" error). Titles are identical, so we cannot tell them apart — instead
 # use a ladder that re-checks after each step and NEVER presses the update
@@ -501,11 +522,13 @@ while ($elapsed -lt $maxWaitSeconds) {
         Write-Host ""
         Write-Host "Popup detected during wait (retry $retries/$maxRetries) — recovering..."
         if (Resolve-Popup -LoginHandle $loginHandle) {
-            Set-WindowFocus -Handle $loginHandle | Out-Null
+            # After dismissing the error dialog, SimplySign keeps the ID value and
+            # leaves the empty Token field focused. Refill only the token — do not
+            # re-focus the window or re-enter the ID (either moves input off Token).
             Start-Sleep -Milliseconds 500
             $freshOtp = Get-FreshTotpCode
-            Write-Host "Re-submitting credentials with a fresh TOTP..."
-            Invoke-CredentialSubmit -Handle $loginHandle -Otp $freshOtp
+            Write-Host "Re-submitting a fresh token into the focused Token field..."
+            Invoke-TokenResubmit -Otp $freshOtp
         }
         Write-Host ""
     }
