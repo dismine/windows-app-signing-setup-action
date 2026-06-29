@@ -102,7 +102,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: simplysign-diag-${{ matrix.simplysign.version }}
+          # Include the scenario: the bad-token and bad-username entries share the
+          # same version, and upload-artifact@v4 rejects duplicate artifact names.
+          name: simplysign-diag-${{ matrix.simplysign.version }}-${{ matrix.simplysign.scenario }}
           path: simplysign-diag-*.png
           if-no-files-found: ignore
 

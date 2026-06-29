@@ -298,6 +298,10 @@ function Get-LoginWindow {
 
 # Diagnostic screenshot — opt-in only (login email is visible, so never on by
 # default for public users). Enabled via CAPTURE_DIAGNOSTICS=true in our tests.
+# Each capture is numbered with an incrementing counter so repeated stages (e.g.
+# a popup or submit on every retry) are all preserved, not overwritten — and the
+# files sort in chronological order.
+$script:diagSeq = 0
 function Save-Screenshot {
     param([string]$Stage)
     if ($env:CAPTURE_DIAGNOSTICS -ne 'true') { return }
@@ -309,7 +313,9 @@ function Save-Screenshot {
         $g = [System.Drawing.Graphics]::FromImage($bmp)
         $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
         $safe = ($Stage -replace '[^A-Za-z0-9_-]', '_')
-        $path = Join-Path (Get-Location) "simplysign-diag-$safe.png"
+        $script:diagSeq++
+        $seq = '{0:D3}' -f $script:diagSeq
+        $path = Join-Path (Get-Location) "simplysign-diag-$seq-$safe.png"
         $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
         $g.Dispose(); $bmp.Dispose()
         Write-Host "Saved diagnostic screenshot: $path"
@@ -355,11 +361,18 @@ function Invoke-CredentialSubmit {
     }
     Start-Sleep -Milliseconds 400
 
+    # Diagnostic: dialog state before we type anything (is ID pre-filled/empty?
+    # which field has focus?).
+    Save-Screenshot -Stage "before-fill"
+
     # ID field (focused on a fresh dialog): clear, then paste username
     Set-Clipboard -Value $UserName
     $wshell.SendKeys("^a"); Start-Sleep -Milliseconds 120
     $wshell.SendKeys("{DEL}"); Start-Sleep -Milliseconds 120
     $wshell.SendKeys("^v"); Start-Sleep -Milliseconds 250
+
+    # Diagnostic: where did the username text actually land?
+    Save-Screenshot -Stage "after-userid"
 
     # Move to the Token field: clear, then paste the one-time code
     $wshell.SendKeys("{TAB}"); Start-Sleep -Milliseconds 250
@@ -371,6 +384,9 @@ function Invoke-CredentialSubmit {
     # Submit
     $wshell.SendKeys("{ENTER}")
     Start-Sleep -Milliseconds 300
+
+    # Diagnostic: result right after submit, before any popup appears.
+    Save-Screenshot -Stage "after-submit"
 
     # Clear the clipboard so the secret token does not linger
     Set-Clipboard -Value ' '
@@ -385,6 +401,10 @@ function Invoke-CredentialSubmit {
 function Invoke-TokenResubmit {
     param([string]$Otp)
 
+    # Diagnostic: dialog state before the token-only resubmit (where is focus,
+    # does the ID field still hold its value?).
+    Save-Screenshot -Stage "before-token-resubmit"
+
     Set-Clipboard -Value $Otp
     $wshell.SendKeys("^a"); Start-Sleep -Milliseconds 120
     $wshell.SendKeys("{DEL}"); Start-Sleep -Milliseconds 120
@@ -392,6 +412,9 @@ function Invoke-TokenResubmit {
 
     $wshell.SendKeys("{ENTER}")
     Start-Sleep -Milliseconds 300
+
+    # Diagnostic: result right after the token-only resubmit.
+    Save-Screenshot -Stage "after-token-resubmit"
 
     # Clear the clipboard so the secret token does not linger
     Set-Clipboard -Value ' '
