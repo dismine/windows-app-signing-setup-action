@@ -258,12 +258,25 @@ function Get-WindowTitle {
     return $sb.ToString()
 }
 
+function Get-WindowGeometry {
+    param([IntPtr]$Handle)
+    $rect = New-Object 'WinAPI+RECT'
+    [WinAPI]::GetWindowRect($Handle, [ref]$rect) | Out-Null
+    return [PSCustomObject]@{
+        Left   = $rect.Left
+        Top    = $rect.Top
+        Width  = $rect.Right - $rect.Left
+        Height = $rect.Bottom - $rect.Top
+    }
+}
+
 function Write-WindowTitles {
     param([string]$Context)
     $wins = @(Get-SimplySignWindows)
     Write-Host "[$Context] Visible windows: $($wins.Count)"
     foreach ($h in $wins) {
-        Write-Host "  - handle=$h title='$(Get-WindowTitle -Handle $h)'"
+        $g = Get-WindowGeometry -Handle $h
+        Write-Host "  - handle=$h title='$(Get-WindowTitle -Handle $h)' size=$($g.Width)x$($g.Height) pos=($($g.Left),$($g.Top))"
     }
 }
 
@@ -335,7 +348,7 @@ function Get-FreshTotpCode {
 # digit => "Invalid user name or token"); an atomic paste removes that failure
 # class. Fields are cleared first to drop any pre-filled/residual content.
 function Invoke-CredentialSubmit {
-    param([IntPtr]$Handle, [string]$Otp)
+    param([IntPtr]$Handle, [string]$Otp, [string]$UserName = $UserId)
 
     if (-not (Set-WindowFocus -Handle $Handle)) {
         Write-Host "WARNING: could not focus login dialog before submit"
@@ -343,7 +356,7 @@ function Invoke-CredentialSubmit {
     Start-Sleep -Milliseconds 400
 
     # ID field (focused on a fresh dialog): clear, then paste username
-    Set-Clipboard -Value $UserId
+    Set-Clipboard -Value $UserName
     $wshell.SendKeys("^a"); Start-Sleep -Milliseconds 120
     $wshell.SendKeys("{DEL}"); Start-Sleep -Milliseconds 120
     $wshell.SendKeys("^v"); Start-Sleep -Milliseconds 250
@@ -397,7 +410,13 @@ function Resolve-Popup {
     if ($popups.Count -eq 0) { return $false }
 
     $popup = $popups[0]
-    Write-Host "Modal popup detected: handle=$popup title='$(Get-WindowTitle -Handle $popup)'"
+    # Titles are identical, so log geometry to tell the dialogs apart from text
+    # logs alone (privacy-safe — no screenshot needed). The "New version found"
+    # update prompt (#2, Yes/No, more text) is wider than the short "Invalid user
+    # name or token" error box (#3, OK only); the width is a heuristic, not exact.
+    $g = Get-WindowGeometry -Handle $popup
+    $guess = if ($g.Width -ge 400) { 'likely #2 update dialog (Yes/No)' } else { 'likely #3 error dialog (OK only)' }
+    Write-Host "Modal popup detected: handle=$popup title='$(Get-WindowTitle -Handle $popup)' size=$($g.Width)x$($g.Height) pos=($($g.Left),$($g.Top)) — $guess"
     Save-Screenshot -Stage "popup"
 
     $ladder = @(
@@ -481,6 +500,7 @@ while ($settle -lt 6) {
 
 # First credential submission
 $forceBad = ($env:SS_TEST_FORCE_BAD_FIRST_TOKEN -eq 'true')
+$forceBadUser = ($env:SS_TEST_FORCE_BAD_FIRST_USERNAME -eq 'true')
 $otp = Get-FreshTotpCode
 if ($forceBad) {
     Write-Host "TEST HOOK: SS_TEST_FORCE_BAD_FIRST_TOKEN=true — first submit uses a deliberately invalid token"
@@ -490,18 +510,31 @@ if ($forceBad) {
     $submitOtp = $otp
 }
 
+# Test-only: corrupt the username on the FIRST submit so a token-only retry can
+# never recover it, forcing the full-re-entry escalation (which uses the real
+# username) to run. The real $UserId is restored automatically on escalation.
+$submitUser = if ($forceBadUser) {
+    Write-Host "TEST HOOK: SS_TEST_FORCE_BAD_FIRST_USERNAME=true — first submit uses a deliberately invalid username"
+    "$UserId-invalid"
+} else {
+    $UserId
+}
+
 Write-Host "Injecting credentials (clipboard paste): ID -> TAB -> Token -> ENTER..."
-Invoke-CredentialSubmit -Handle $loginHandle -Otp $submitOtp
+Invoke-CredentialSubmit -Handle $loginHandle -Otp $submitOtp -UserName $submitUser
 Write-Host "Credentials submitted"
 Write-Host ""
 
 # Wait for the certificate; recover from any modal popup (invalid token / update)
 Write-Host "Waiting for certificate to become available..."
-$maxWaitSeconds = 120
+$maxWaitSeconds = 180
 $elapsed = 0
 $match = $null
 $retries = 0
-$maxRetries = 3
+# Modest cap, kept deliberately bounded: too many bad submissions can lock the
+# Certum account, so this is NOT unbounded. Each recovery cycle waits for a fresh
+# TOTP period (~30s) + validation, so 5 attempts comfortably fit the 180s window.
+$maxRetries = 5
 
 while ($elapsed -lt $maxWaitSeconds) {
     $signingCerts = Get-ChildItem -Path 'Cert:\CurrentUser\My' -ErrorAction SilentlyContinue |
@@ -517,18 +550,39 @@ while ($elapsed -lt $maxWaitSeconds) {
     # A modal popup means the previous submit was rejected (or an update dialog
     # appeared). Dismiss it and re-submit with a fresh TOTP code.
     $popups = @(Get-SimplySignWindows | Where-Object { $_ -ne $loginHandle })
-    if ($popups.Count -gt 0 -and $retries -lt $maxRetries) {
+    if ($popups.Count -gt 0) {
+        if ($retries -ge $maxRetries) {
+            # Out of recovery attempts and the rejection dialog is still up — the
+            # credential is being rejected every time (e.g. a bad token will never
+            # recover). Fail fast with a precise reason instead of idling out the
+            # remaining wait window doing nothing.
+            Save-Screenshot -Stage "rejected"
+            Write-WindowTitles -Context "credential rejected"
+            Write-Error "Credential rejected $retries times (modal popup still present) — aborting. The submitted username/token was not accepted."
+            exit 1
+        }
+
         $retries++
         Write-Host ""
-        Write-Host "Popup detected during wait (retry $retries/$maxRetries) — recovering..."
+        Write-Host "Popup detected during wait (attempt $retries/$maxRetries) — recovering..."
         if (Resolve-Popup -LoginHandle $loginHandle) {
-            # After dismissing the error dialog, SimplySign keeps the ID value and
-            # leaves the empty Token field focused. Refill only the token — do not
-            # re-focus the window or re-enter the ID (either moves input off Token).
             Start-Sleep -Milliseconds 500
             $freshOtp = Get-FreshTotpCode
-            Write-Host "Re-submitting a fresh token into the focused Token field..."
-            Invoke-TokenResubmit -Otp $freshOtp
+            if ($retries -eq 1) {
+                # First recovery: SimplySign keeps the ID value and leaves the empty
+                # Token field focused, so refill only the token — do NOT re-focus the
+                # window or re-enter the ID (either moves input off the Token field).
+                # This recovers a transient bad token while the username was correct.
+                Write-Host "Re-submitting a fresh token into the focused Token field..."
+                Invoke-TokenResubmit -Otp $freshOtp
+            } else {
+                # Still rejected after a token-only retry — the retained username may
+                # itself be corrupt (token-only can never fix that). Escalate to a
+                # full clean re-entry: re-focus resets Qt focus to the ID field, then
+                # both username and token are cleared and re-pasted.
+                Write-Host "Token-only retry still rejected — escalating to a full credential re-entry..."
+                Invoke-CredentialSubmit -Handle $loginHandle -Otp $freshOtp
+            }
         }
         Write-Host ""
     }
