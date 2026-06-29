@@ -12,17 +12,12 @@ jobs:
     strategy:
       matrix:
         simplysign:
-          # Forces a bad first token: exercises the token-only recovery path.
+          # Forces a bad first token: exercises the token-only recovery path
+          # (dismiss the invalid-token dialog, resubmit on a fresh TOTP period).
           - version: '9.4.3.90'
             url: 'https://files.certum.eu/software/SimplySignDesktop/Windows/9.4.3.90/SimplySignDesktop-9.4.3.90-64-bit-en.msi'
             scenario: 'bad-token'
             forceBadToken: true
-          # Forces a bad first username: a token-only retry can never fix it, so
-          # this exercises the escalation to a full credential re-entry.
-          - version: '9.4.3.90'
-            url: 'https://files.certum.eu/software/SimplySignDesktop/Windows/9.4.3.90/SimplySignDesktop-9.4.3.90-64-bit-en.msi'
-            scenario: 'bad-username'
-            forceBadUsername: true
           - version: '9.4.2.86' # Testing update proposal
             url: 'https://files.certum.eu/software/SimplySignDesktop/Windows/9.4.2.86/SimplySignDesktop-9.4.2.86-64-bit-en.msi'
             scenario: 'outdated'
@@ -30,14 +25,13 @@ jobs:
 
     name: test-sign (SimplySign ${{ matrix.simplysign.version }} / ${{ matrix.simplysign.scenario }})
 
-    # Test-only hooks: deterministically force the first submission to fail so the
-    # recovery paths are exercised. An empty value (flag unset on an entry) is not
-    # 'true', so the hook is a no-op there. The "outdated" entry forces neither and
-    # naturally raises the update dialog instead. Set at job level so the values
-    # reliably propagate into the composite action's steps.
+    # Test-only hook: deterministically force the first token submission to fail so
+    # the token-only recovery path is exercised. An empty value (flag unset on an
+    # entry) is not 'true', so the hook is a no-op there. The "outdated" entry forces
+    # nothing and naturally raises the update dialog instead. Set at job level so the
+    # value reliably propagates into the composite action's steps.
     env:
       SS_TEST_FORCE_BAD_FIRST_TOKEN: ${{ matrix.simplysign.forceBadToken }}
-      SS_TEST_FORCE_BAD_FIRST_USERNAME: ${{ matrix.simplysign.forceBadUsername }}
 
     steps:
       - name: Checkout Action Code

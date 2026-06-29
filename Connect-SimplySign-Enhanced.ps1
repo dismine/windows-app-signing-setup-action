@@ -349,12 +349,37 @@ function Get-FreshTotpCode {
     return $code
 }
 
+# The TOTP period counter (which 30s window we are in). Used to guarantee a
+# recovery resubmit never reuses the window of an attempt that just failed.
+function Get-TotpPeriod {
+    return [math]::Floor([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() / $Period)
+}
+
+# Records the period of the most recent submission so recovery can wait past it.
+$script:lastSubmitPeriod = -1
+
+# Generate a recovery code from a period STRICTLY NEWER than the last submit.
+# SimplySign rejects a code from a window in which a prior attempt already failed
+# (frame 006: a correct-looking ID+token resubmitted in the same period was still
+# refused), so we wait for the next window and submit at the start of it.
+function Get-RecoveryTotpCode {
+    while ((Get-TotpPeriod) -le $script:lastSubmitPeriod) {
+        $secondsLeft = $Period - ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() % $Period)
+        Write-Host "Waiting ${secondsLeft}s for a new TOTP period (last submit used period $($script:lastSubmitPeriod))..."
+        Start-Sleep -Seconds ($secondsLeft + 1)
+    }
+    $code = Get-TotpCode -Secret $Base32 -Digits $Digits -Period $Period -Algorithm $Algorithm
+    $left = $Period - ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() % $Period)
+    Write-Host "Recovery TOTP generated (algorithm: $Algorithm) with ~${left}s of validity"
+    return $code
+}
+
 # Enter credentials via the clipboard (Ctrl+V) instead of streaming keystrokes.
 # SendKeys on Qt fields intermittently drops/reorders characters (a single lost
 # digit => "Invalid user name or token"); an atomic paste removes that failure
 # class. Fields are cleared first to drop any pre-filled/residual content.
 function Invoke-CredentialSubmit {
-    param([IntPtr]$Handle, [string]$Otp, [string]$UserName = $UserId)
+    param([IntPtr]$Handle, [string]$Otp)
 
     if (-not (Set-WindowFocus -Handle $Handle)) {
         Write-Host "WARNING: could not focus login dialog before submit"
@@ -366,7 +391,7 @@ function Invoke-CredentialSubmit {
     Save-Screenshot -Stage "before-fill"
 
     # ID field (focused on a fresh dialog): clear, then paste username
-    Set-Clipboard -Value $UserName
+    Set-Clipboard -Value $UserId
     $wshell.SendKeys("^a"); Start-Sleep -Milliseconds 120
     $wshell.SendKeys("{DEL}"); Start-Sleep -Milliseconds 120
     $wshell.SendKeys("^v"); Start-Sleep -Milliseconds 250
@@ -383,6 +408,7 @@ function Invoke-CredentialSubmit {
 
     # Submit
     $wshell.SendKeys("{ENTER}")
+    $script:lastSubmitPeriod = Get-TotpPeriod
     Start-Sleep -Milliseconds 300
 
     # Diagnostic: result right after submit, before any popup appears.
@@ -411,6 +437,7 @@ function Invoke-TokenResubmit {
     $wshell.SendKeys("^v"); Start-Sleep -Milliseconds 250
 
     $wshell.SendKeys("{ENTER}")
+    $script:lastSubmitPeriod = Get-TotpPeriod
     Start-Sleep -Milliseconds 300
 
     # Diagnostic: result right after the token-only resubmit.
@@ -523,7 +550,6 @@ while ($settle -lt 6) {
 
 # First credential submission
 $forceBad = ($env:SS_TEST_FORCE_BAD_FIRST_TOKEN -eq 'true')
-$forceBadUser = ($env:SS_TEST_FORCE_BAD_FIRST_USERNAME -eq 'true')
 $otp = Get-FreshTotpCode
 if ($forceBad) {
     Write-Host "TEST HOOK: SS_TEST_FORCE_BAD_FIRST_TOKEN=true — first submit uses a deliberately invalid token"
@@ -533,18 +559,8 @@ if ($forceBad) {
     $submitOtp = $otp
 }
 
-# Test-only: corrupt the username on the FIRST submit so a token-only retry can
-# never recover it, forcing the full-re-entry escalation (which uses the real
-# username) to run. The real $UserId is restored automatically on escalation.
-$submitUser = if ($forceBadUser) {
-    Write-Host "TEST HOOK: SS_TEST_FORCE_BAD_FIRST_USERNAME=true — first submit uses a deliberately invalid username"
-    "$UserId-invalid"
-} else {
-    $UserId
-}
-
 Write-Host "Injecting credentials (clipboard paste): ID -> TAB -> Token -> ENTER..."
-Invoke-CredentialSubmit -Handle $loginHandle -Otp $submitOtp -UserName $submitUser
+Invoke-CredentialSubmit -Handle $loginHandle -Otp $submitOtp
 Write-Host "Credentials submitted"
 Write-Host ""
 
@@ -589,23 +605,15 @@ while ($elapsed -lt $maxWaitSeconds) {
         Write-Host ""
         Write-Host "Popup detected during wait (attempt $retries/$maxRetries) — recovering..."
         if (Resolve-Popup -LoginHandle $loginHandle) {
+            # After dismissing the error dialog, SimplySign keeps the ID value and
+            # leaves the empty Token field focused, so refill ONLY the token — do not
+            # re-focus the window or re-enter the ID (either moves input off Token).
+            # Use a code from a brand-new TOTP period: the server rejects a code from
+            # a window in which a submit already failed (so wait past the last one).
             Start-Sleep -Milliseconds 500
-            $freshOtp = Get-FreshTotpCode
-            if ($retries -eq 1) {
-                # First recovery: SimplySign keeps the ID value and leaves the empty
-                # Token field focused, so refill only the token — do NOT re-focus the
-                # window or re-enter the ID (either moves input off the Token field).
-                # This recovers a transient bad token while the username was correct.
-                Write-Host "Re-submitting a fresh token into the focused Token field..."
-                Invoke-TokenResubmit -Otp $freshOtp
-            } else {
-                # Still rejected after a token-only retry — the retained username may
-                # itself be corrupt (token-only can never fix that). Escalate to a
-                # full clean re-entry: re-focus resets Qt focus to the ID field, then
-                # both username and token are cleared and re-pasted.
-                Write-Host "Token-only retry still rejected — escalating to a full credential re-entry..."
-                Invoke-CredentialSubmit -Handle $loginHandle -Otp $freshOtp
-            }
+            $freshOtp = Get-RecoveryTotpCode
+            Write-Host "Re-submitting a fresh-period token into the focused Token field..."
+            Invoke-TokenResubmit -Otp $freshOtp
         }
         Write-Host ""
     }

@@ -1,9 +1,9 @@
 # Changelog
 
 ## v1.2.5
-- Fix a class of intermittent "Invalid user name or token" failures that could never recover: if the very first submission entered a bad username, the retry only refreshed the token and left the corrupt username in place, so every attempt was rejected. Recovery now escalates to a full credential re-entry (username + token) after a token-only retry still fails
-- Authentication no longer gives up after only 3 quick retries inside the first ~15 seconds; the recovery budget and wait window are aligned (up to 5 recovery attempts over 180 seconds), and the run now fails fast with a precise reason when the credential keeps being rejected instead of idling out the remaining wait
-- Window logging now records each dialog's size and position, so the otherwise-identical "New version" update prompt and "Invalid user name or token" error can be told apart from the text logs alone (no screenshot needed)
+- Fix intermittent "Invalid user name or token" failures that never recovered after the first attempt was rejected. The recovery now resubmits the one-time code using a code from a brand-new time window — the service rejects a code from a window in which a submission already failed, so reusing the same window kept failing. After dismissing the error dialog the account ID is preserved and only the fresh code is re-entered
+- Authentication no longer gives up after only 3 quick retries inside the first ~15 seconds; the recovery budget and wait window are aligned (up to 5 recovery attempts over 180 seconds), and the run now fails fast with a precise reason when the code keeps being rejected instead of idling out the remaining wait
+- Window logging now records each dialog's size and position, so the otherwise-identical "New version" update prompt and "Invalid user name or token" error can be told apart from the text logs alone; opt-in diagnostic screenshots are numbered so every step is preserved for debugging
 
 ## v1.2.4
 - Fix intermittent "Invalid user name or token" authentication failures: credentials are now entered via the clipboard (Ctrl+V) instead of streamed keystrokes, which could drop or reorder characters on the Qt login fields
